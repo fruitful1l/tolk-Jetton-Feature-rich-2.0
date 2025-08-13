@@ -11,6 +11,22 @@ type AllowedMessageToWallet =
     | JettonBurn
     | ClaimTON
 
+
+fun onBouncedMessage(in: InMessageBounced) {
+    in.bouncedBody.skipBouncedPrefix();
+    val msg = lazy BounceOpToHandle.fromSlice(in.bouncedBody);
+
+
+    val restoreAmount = match (msg) {
+        JettonTransferInternalWithStateInit => msg.jettonAmount,       // safe to fetch jettonAmount, because
+        JettonBurnNotification => msg.jettonAmount,  // it's in the beginning of a message
+    };
+
+    var storage = lazy JettonWalletStorage.load();
+    storage.jettonBalance += restoreAmount;
+    storage.save();
+}
+
 fun onInternalMessage(in: InMessage) {
     val msg = lazy AllowedMessageToWallet.fromSlice(in.body);
 
@@ -128,7 +144,6 @@ fun onInternalMessage(in: InMessage) {
         }
         JettonTransferInternalWithStateInit => {
             var storage = lazy JettonWalletStorage.loadData();
-        
             if (in.senderAddress != storage.minter) {
                 assert (in.senderAddress.isAddressOfJettonWallet(msg.sender, storage.minter, contract.getCode())) throw 237;
             }
@@ -145,7 +160,7 @@ fun onInternalMessage(in: InMessage) {
 
             if(msg.forwardTonAmount) {
                 msgValue -= (msg.forwardTonAmount + in.originalForwardFee);
-
+                
 
                 match(msg.forwardStateInit) {
                     ContractState => {
@@ -190,29 +205,76 @@ fun onInternalMessage(in: InMessage) {
             
                 reserveToncoinsOnBalance(max(tonBalanceBeforeMsg, minTonsForStorage), 2);
 
-                if (msg.responseDestination != null && msgValue > 0) {
-                    
+                if ((msg.responseDestination.isInternal()) & (msgValue > 0)) {
+                    val cashbackMsg = createMessage({
+                        bounce: false,
+                        dest: msg.responseDestination,
+                        value: msgValue,
+                        body: JettonExcesses { queryId: msg.queryId},
+
+                    });
+                    cashbackMsg.send(SEND_MODE_CARRY_ALL_BALANCE | SEND_MODE_IGNORE_ERRORS)
+                }
+            }
+        }
+        ProvideWalletBalance => {
+            val storage = lazy JettonWalletStorage.loadData();
+            var info: VerifyInfo? = null;
+            if(msg.includeVerifyInfo) {
+                info = VerifyInfo {
+                    minter: storage.minter,
+                    owner: storage.owner,
+                    code: contract.getCode(),
                 }
             }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            val provideWallet = createMessage({
+                bounce: true,
+                dest: msg.receiver,
+                value: 0,
+                body: TakeWalletBalance {
+                    balance: storage.balance,
+                    verifyInfo: info
+                },
+            });
+            provideWallet.send(SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE);  
         }
-        ProvideWalletBalance => {}
-        JettonBurn => {}
-        ClaimTON => {}
+        JettonBurn => {
+            var storage = lazy JettonWalletStorage.loadData();
+            assert (in.senderAddress == storage.owner) throw 309;
+            assert (storage.balance >= msg.amount) throw 400;
+            storage.balance -= msg.amount;
+            storage.saveData();
+
+            val notifyMinterMsg = createMessage({
+                bounce: true,
+                dest: storage.minter,
+                value: 0,
+                body: JettonBurnNotification {
+                    queryId: msg.queryId,
+                    amount: msg.amount,
+                    sender: storage.owner,
+                    responseDestination: msg.responseDestination,
+                }
+            });
+            notifyMinterMsg.send(SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE | SEND_MODE_BOUNCE_ON_ACTION_FAIL);
+        }
+        ClaimTON => {
+            var storage = lazy JettonWalletStorage.loadData();
+            reserveToncoinsOnBalance(minTonsForStorage, RESERVE_MODE_EXACT_AMOUNT | RESERVE_MODE_BOUNCE_ON_ACTION_FAIL);
+
+            val claimMsg = createMessage({
+                bounce: true,
+                dest: msg.receiver,
+                value: 0,
+            });
+
+            claimMsg.send(SEND_MODE_CARRY_ALL_BALANCE);
+        }
+
+        else => {
+            assert(in.body.isEmpty()) throw 0xFFFF
+        },
     }
 
 }

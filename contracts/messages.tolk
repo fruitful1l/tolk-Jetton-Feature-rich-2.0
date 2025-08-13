@@ -29,7 +29,7 @@ struct(0xf8a7ea5) JettonTransfer {
     queryId: uint64;
     amount: coins;
     destination: address
-    responseDestination: address?
+    responseDestination: address
     customPayload: cell? 
     forwardTonAmount: coins
     forwardPayload: ForwardPayloadRemainder;
@@ -39,7 +39,7 @@ struct(0x178d4519) JettonTransferInternalWithStateInit {
     queryId: uint64
     amount: coins
     sender: address
-    responseDestination: address?
+    responseDestination: address
     forwardTonAmount: coins
     forwardStateInit: ContractState?
     forwardPayload: ForwardPayloadRemainder
