@@ -11,20 +11,24 @@ type AllowedMessageToWallet =
     | JettonBurn
     | ClaimTON
 
+type BouncedOpToHandle =
+    | JettonTransferInternalWithStateInit
+    | JettonBurnNotification
+
 
 fun onBouncedMessage(in: InMessageBounced) {
     in.bouncedBody.skipBouncedPrefix();
-    val msg = lazy BounceOpToHandle.fromSlice(in.bouncedBody);
+    val msg = lazy BouncedOpToHandle.fromSlice(in.bouncedBody);
 
 
     val restoreAmount = match (msg) {
-        JettonTransferInternalWithStateInit => msg.jettonAmount,       // safe to fetch jettonAmount, because
-        JettonBurnNotification => msg.jettonAmount,  // it's in the beginning of a message
+        JettonTransferInternalWithStateInit => msg.amount,       // safe to fetch jettonAmount, because
+        JettonBurnNotification => msg.amount,  // it's in the beginning of a message
     };
 
-    var storage = lazy JettonWalletStorage.load();
-    storage.jettonBalance += restoreAmount;
-    storage.save();
+    var storage = lazy JettonWalletStorage.loadData();
+    storage.balance += restoreAmount;
+    storage.saveData();
 }
 
 fun onInternalMessage(in: InMessage) {
@@ -37,6 +41,7 @@ fun onInternalMessage(in: InMessage) {
             
             assert(msg.destination.getWorkchain() == BASECHAIN) throw 232;
             assert(in.senderAddress == storage.owner, 233);
+            assert(msg.amount <= storage.balance) throw 429;
 
             var forwardedMessagesCount = msg.forwardTonAmount ? 2 : 1;
             assert (in.valueCoins >
@@ -51,7 +56,7 @@ fun onInternalMessage(in: InMessage) {
                 null => {
                     storage.balance -= msg.amount;
                     storage.saveData();
-                    assert(storage.balance >= 0, 235);
+                    
                     checkEitherForwardPayload(msg.forwardPayload);
                 
                     
@@ -74,11 +79,12 @@ fun onInternalMessage(in: InMessage) {
                     deployMsg.send(SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE);
                 },
 
-                cell => {
-                    val payload = CustomPayloadWithSendModes.fromCell(msg.customPayload);
+                Cell<CustomPayloadWithSendModes> => {
+                    val payload = lazy msg.customPayload.load();
                     val extendedActionMode = payload.mode;
 
                     var sendAmount = msg.amount;
+                    checkEitherForwardPayload(msg.forwardPayload);
 
                     if ((extendedActionMode & SendAllJettonsMode) != 0) {
                         sendAmount = storage.balance;
@@ -277,4 +283,15 @@ fun onInternalMessage(in: InMessage) {
         },
     }
 
+}
+
+get fun get_wallet_data(): JettonWalletData {
+    val storage = lazy JettonWalletStorage.loadData();
+
+    return JettonWalletData{
+        balance: storage.balance,
+        owner: storage.owner,
+        minter: storage.minter,
+        code: contract.getCode(),
+    }
 }
